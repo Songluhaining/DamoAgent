@@ -1,0 +1,74 @@
+# 打磨工作站配置 —— 来自 E:\Myself\cs1111 站台勘察
+# 机器人 IRB2600-20/1.65 Type C, RobotWare 7.20.0, 纯位置控制（无 Force Control）
+
+robot:
+  model: "IRB2600-20/1.65"
+  type: "C"
+  robotware: "7.20.0"
+  task: "T_ROB1"
+  mechunit: "ROB_1"
+  # damo_routine 是主循环里预留的空壳，规划系统生成的打磨段写进这里
+  target_proc: "damo_routine"
+  target_module: "damo_generated"
+
+# RWS 2.0 连接（换机器后填真实端口/凭据；未连接时走桩数据）
+rws:
+  base_url: "https://127.0.0.1:443"   # RW7 虚拟控制器端口需实测确认，勿照搬网上的 :80（那是 RWS 1.0）
+  username: "Default User"
+  password: "robotics"
+  verify_tls: false                    # 虚拟控制器自签证书
+  connected: false                     # false = 桩模式，返回假数据把闭环跑通
+
+# RobotStudio Add-in 碰撞桥（几何碰撞 RWS 拿不到，必须走进程内插件）
+collision_addin:
+  base_url: "http://127.0.0.1:5888"
+  connected: false                     # false = 桩模式
+
+# 4 条打磨带 —— 参数各不相同。
+# tool/wobj/speed 取自站台 RAPID 实际定义；
+# preston.* 是去除模型系数，当前为文献占位值，需用你的历史磨削数据拟合。
+belts:
+  belt1:
+    label: "左工位砂带机·上接触轮"
+    tool: "Sltyuan"          # tooldata, robhold=TRUE（腕上工件接触点）
+    wobj: "lun1"             # wobjdata, robhold=FALSE（固定砂带机）
+    slot_wobj: "Lun1_slt"
+    speeddata: "Cslun1speed" # [140,80,5000,1000]
+    zonedata: "z1"
+    belt_speed_m_s: 25.0
+    contact_wheel_hardness_shore: 60
+    grit: 60
+    preston: { kp: 1.0e-5, p_exp: 1.0, v_exp: 1.0 }   # 占位，待拟合
+  belt2:
+    label: "右工位砂带机·上接触轮"
+    tool: "Sltcsk"
+    wobj: "lun2"
+    slot_wobj: "Lun2_slt"
+    speeddata: "Cslun2speed" # [120,80,...]
+    zonedata: "z1"
+    belt_speed_m_s: 22.0
+    contact_wheel_hardness_shore: 70
+    grit: 120
+    preston: { kp: 6.0e-6, p_exp: 1.0, v_exp: 1.0 }
+  belt3:
+    label: "砂带机·下接触轮 / 精磨"
+    tool: "Sltcsk"
+    wobj: "lun1"
+    slot_wobj: "Lun3_slt"
+    speeddata: "Cslun3speed"
+    zonedata: "z5"
+    belt_speed_m_s: 18.0
+    contact_wheel_hardness_shore: 80
+    grit: 240
+    preston: { kp: 3.0e-6, p_exp: 1.0, v_exp: 1.0 }
+  belt4:
+    label: "抛光/尼龙轮工位"
+    tool: "Cfx"              # 抛光 TCP
+    wobj: "Liaopan"
+    slot_wobj: "Liaopan"
+    speeddata: "Cslun4speed" # [1000,500,...]
+    zonedata: "z5"
+    belt_speed_m_s: 15.0
+    contact_wheel_hardness_shore: 90
+    grit: 400
+    preston: { kp: 1.0e-6, p_exp: 1.0, v_exp: 1.0 }

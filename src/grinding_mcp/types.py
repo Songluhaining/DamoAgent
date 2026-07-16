@@ -1,0 +1,112 @@
+"""贯穿各层的数据类型。
+
+分工原则（决定字段归属）：
+  智能体（LLM）产出 GrindSpec / GrindStep —— 离散工艺决策
+  求解层产出 ContactPoint / RobTarget / RemovalField —— 数值，不由 LLM 生成
+  仿真层产出 SimResult；评价层产出 Evaluation
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+
+# --- 智能体产出（工艺决策） ---------------------------------------------
+
+@dataclass
+class GrindSpec:
+    """打磨要求解析后的结构化规格。由智能体从自然语言产出。"""
+    spec_id: str
+    workpiece: str
+    belts: list[str]                 # 要用的带，如 ["belt1", "belt3"]
+    grit_sequence: list[int]         # 粒度序列，粗→精
+    target_removal_mm: float         # 目标去除量
+    tolerance_mm: float              # 允差
+    surface_ra_um: float | None      # 目标表面粗糙度，可空
+    raw_text: str = ""               # 原始要求，留痕
+
+
+@dataclass
+class GrindStep:
+    """工作流中的一个子步骤（针对某条带、某区域的一遍打磨）。由智能体产出。"""
+    step_id: str
+    spec_id: str
+    belt_id: str
+    order: int
+    region: dict                     # 区域描述：曲面/包围盒/接触点引用
+    passes: int = 1
+    feed_mm_s: float = 20.0
+    contact_depth_mm: float = 0.1    # 工件压入砂带深度（纯位置控制下这是去除量的主控量）
+    dwell_s: float = 0.0
+
+
+# --- 求解层产出（数值，非 LLM） ------------------------------------------
+
+@dataclass
+class ContactPoint:
+    """接触点：定义在带的 wobj 坐标系里。pos + 表面法向。"""
+    index: int
+    pos: tuple[float, float, float]
+    normal: tuple[float, float, float]
+
+
+@dataclass
+class RobTarget:
+    """一个 ABB robtarget，附带优化信息。"""
+    index: int
+    trans: tuple[float, float, float]
+    rot: tuple[float, float, float, float]          # 四元数 [q1,q2,q3,q4]
+    robconf: tuple[int, int, int, int] = (0, 0, 0, 0)
+    extax: tuple[float, ...] = (9e9, 9e9, 9e9, 9e9, 9e9, 9e9)
+    redundancy_angle_deg: float = 0.0               # 优化出的绕接触法向的冗余角
+    reachable: bool = True                          # 求解层的可达性初判（仿真层再复核）
+
+
+@dataclass
+class RemovalField:
+    """一条路径的去除量分布（Preston 预测）。"""
+    per_point_mm: list[float] = field(default_factory=list)
+    mean_mm: float = 0.0
+    min_mm: float = 0.0
+    max_mm: float = 0.0
+
+
+@dataclass
+class TargetSet:
+    """一个子步骤求解后的完整结果。存 server 侧，用 targets_id 引用。"""
+    targets_id: str
+    step_id: str
+    belt_id: str
+    targets: list[RobTarget]         # 完整数组留这里，不进上下文
+    removal: RemovalField
+    posture_cost: float = 0.0        # 姿态代价（越小越好，如刚度倒数）
+
+
+# --- 仿真层产出 ----------------------------------------------------------
+
+@dataclass
+class SimResult:
+    """一次仿真的原始结果。存 server 侧，用 sim_id 引用。"""
+    sim_id: str
+    targets_id: str
+    total_count: int
+    reachable_count: int
+    collisions: list[dict] = field(default_factory=list)       # {seg, pair}
+    singularities: list[int] = field(default_factory=list)     # 出问题的点 index
+    joint_limit_violations: list[int] = field(default_factory=list)
+    cycle_time_s: float = 0.0
+    alarms: list[dict] = field(default_factory=list)           # 控制器事件日志
+    joint_path: list[list[float]] = field(default_factory=list)  # 关节序列，留 server 侧
+    stub: bool = False               # True 表示桩数据（未连真控制器）
+
+
+# --- 评价层产出 ----------------------------------------------------------
+
+@dataclass
+class Evaluation:
+    """双评价器结果。供智能体做 ReAct 下一步决策。"""
+    passed: bool
+    kinematic: dict                  # 运动学：可达/碰撞/奇异/限位 逐项判定
+    process: dict                    # 工艺：去除量 vs 目标、粗糙度
+    residual_regions: list[dict] = field(default_factory=list)   # 欠磨/过磨区域
+    suggestions: list[str] = field(default_factory=list)         # 结构化改进方向提示

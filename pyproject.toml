@@ -1,0 +1,36 @@
+[project]
+name = "grinding-mcp"
+version = "0.1.0"
+description = "MCP server for LLM-driven ABB IRB2600 belt-grinding planning and RobotStudio simulation"
+requires-python = ">=3.10"
+dependencies = [
+    # MCP 服务端框架（stdio 传输，hermes 原生客户端连接）
+    "mcp>=1.2.0,<2.0.0",
+    # RWS 2.0 是 https REST，用 httpx 做异步客户端
+    "httpx>=0.27.0,<0.29.0",
+    # 数值计算（接触点采样、Preston 去除模型、姿态代价）
+    "numpy>=1.26.0,<3.0.0",
+    "pyyaml>=6.0,<7.0",
+]
+
+[project.optional-dependencies]
+# 求解层的真实算法依赖——baseline 不装它们也能空跑。
+# 你后面实现姿态优化时再装。
+solver = [
+    "roboticstoolbox-python>=1.1.0,<2.0.0",  # 正运动学/雅可比，算刚度和可达性
+    "spatialmath-python>=1.1.0,<2.0.0",
+    # "pyroki",  # Berkeley 冗余优化工具箱，按需从源码装
+]
+dev = [
+    "pytest>=8.0,<9.0",
+]
+
+[project.scripts]
+grinding-mcp = "grinding_mcp.server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/grinding_mcp"]

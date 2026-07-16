@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# 生成的 RAPID 模块
+*.modx.tmp
+damo_generated_*.modx
+
+# 本地机密（RWS 凭据等），若单独放置
+config/*.local.yaml
+.env
+
+# 编辑器
+.vscode/
+.idea/
