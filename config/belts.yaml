@@ -27,6 +27,15 @@ collision_addin:
 # 4 条打磨带 —— 参数各不相同。
 # tool/wobj/speed 取自站台 RAPID 实际定义；
 # preston.* 是去除模型系数，当前为文献占位值，需用你的历史磨削数据拟合。
+#
+# contact.* 是接触面几何，由 `python -m grinding_mcp.calibrate` 从 490 个示教点
+# 反推（磨削段平面拟合）。point/normal/direction 在示教所用的槽位 wobj 系里：
+#   point      代表接触点（形心，mm）
+#   normal     接触面法向，指向工件侧（单位向量）
+#   direction  砂带走向候选（面内长轴；符号与确切轴向待上站台核实）
+#   resid_rms_mm  平面拟合残差；<8 可信，>8 说明该段混了弧形接触，暂定
+# 坐标系坑：示教点在 Lun*_slt 槽位系，与本条带的 wobj 可能差一个偏置帧，
+# 跨系使用前必须换算——换到 RobotStudio 机器后重跑 calibrate 核实。
 belts:
   belt1:
     label: "左工位砂带机·上接触轮"
@@ -39,6 +48,14 @@ belts:
     contact_wheel_hardness_shore: 60
     grit: 60
     preston: { kp: 1.0e-5, p_exp: 1.0, v_exp: 1.0 }   # 占位，待拟合
+    contact:                        # 标定源: Sltyuan/Lun1_slt, 92点, 残差RMS 12.1mm(暂定)
+      calib_source: "Sltyuan/Lun1_slt"
+      point: [-800.53, 397.53, 1094.55]
+      normal: [0.1657, -0.9853, -0.041]
+      direction: [-0.631, -0.0739, -0.7723]
+      wheel_radius_mm: 100.0        # 占位，待站台核实
+      resid_rms_mm: 12.12
+      trusted: false
   belt2:
     label: "右工位砂带机·上接触轮"
     tool: "Sltcsk"
@@ -50,6 +67,14 @@ belts:
     contact_wheel_hardness_shore: 70
     grit: 120
     preston: { kp: 6.0e-6, p_exp: 1.0, v_exp: 1.0 }
+    contact:                        # 标定源: Sltcsk/Lun2_slt, 49点, 残差RMS 9.0mm(暂定)
+      calib_source: "Sltcsk/Lun2_slt"
+      point: [-696.72, -433.99, 1065.0]
+      normal: [-0.3445, 0.4753, 0.8096]
+      direction: [-0.936, -0.1079, -0.335]
+      wheel_radius_mm: 100.0
+      resid_rms_mm: 8.97
+      trusted: false
   belt3:
     label: "砂带机·下接触轮 / 精磨"
     tool: "Sltcsk"
@@ -61,6 +86,14 @@ belts:
     contact_wheel_hardness_shore: 80
     grit: 240
     preston: { kp: 3.0e-6, p_exp: 1.0, v_exp: 1.0 }
+    contact:                        # 标定源: Sltcsk/Lun1_slt, 65点, 残差RMS 8.0mm(暂定)
+      calib_source: "Sltcsk/Lun1_slt"
+      point: [-715.12, 395.12, 1147.29]
+      normal: [-0.0892, -0.996, -0.0038]
+      direction: [-0.5285, 0.0506, -0.8474]
+      wheel_radius_mm: 100.0
+      resid_rms_mm: 8.03
+      trusted: false
   belt4:
     label: "抛光/尼龙轮工位"
     tool: "Cfx"              # 抛光 TCP
@@ -72,3 +105,12 @@ belts:
     contact_wheel_hardness_shore: 90
     grit: 400
     preston: { kp: 1.0e-6, p_exp: 1.0, v_exp: 1.0 }
+    contact:                        # 标定源: Cfx/lun1, 100点, 残差RMS 3.9mm(最干净)
+      # 注意: 示教用 wobj=lun1，而本带配置 wobj=Liaopan，两系不同——需核实换算
+      calib_source: "Cfx/lun1"
+      point: [-733.45, 395.06, 970.36]
+      normal: [0.0692, -0.9975, -0.0169]
+      direction: [0.2158, -0.0015, 0.9764]
+      wheel_radius_mm: 50.0
+      resid_rms_mm: 3.91
+      trusted: true

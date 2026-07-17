@@ -26,6 +26,23 @@ class PrestonParams:
 
 
 @dataclass
+class ContactGeometry:
+    """砂带接触面几何（由 calibrate.py 从示教点反推）。坐标在标定所用 wobj 系里。
+
+    point/normal/direction 定义了「把工件表面点摆到哪、朝哪压、砂带往哪走」，
+    是 placement 求解反解 robtarget 的目标。trusted=False 表示残差偏大或坐标系
+    待核实，只够跑通闭环，别拿去下真控制器。
+    """
+    point: tuple[float, float, float]      # 代表接触点 C（mm）
+    normal: tuple[float, float, float]     # 接触面法向，朝工件侧（单位向量）
+    direction: tuple[float, float, float]  # 砂带走向候选（面内长轴）
+    wheel_radius_mm: float = 100.0
+    resid_rms_mm: float = 0.0
+    calib_source: str = ""
+    trusted: bool = False
+
+
+@dataclass
 class BeltParams:
     belt_id: str
     label: str
@@ -38,6 +55,7 @@ class BeltParams:
     contact_wheel_hardness_shore: float
     grit: int
     preston: PrestonParams
+    contact: ContactGeometry | None = None
 
 
 @dataclass
@@ -91,6 +109,18 @@ def load_config(path: str | Path | None = None) -> StationConfig:
     belts: dict[str, BeltParams] = {}
     for bid, b in (raw.get("belts") or {}).items():
         preston = PrestonParams(**(b.get("preston") or {}))
+        contact = None
+        c = b.get("contact")
+        if c:
+            contact = ContactGeometry(
+                point=tuple(float(v) for v in c["point"]),
+                normal=tuple(float(v) for v in c["normal"]),
+                direction=tuple(float(v) for v in c["direction"]),
+                wheel_radius_mm=float(c.get("wheel_radius_mm", 100.0)),
+                resid_rms_mm=float(c.get("resid_rms_mm", 0.0)),
+                calib_source=str(c.get("calib_source", "")),
+                trusted=bool(c.get("trusted", False)),
+            )
         belts[bid] = BeltParams(
             belt_id=bid,
             label=b.get("label", bid),
@@ -103,5 +133,6 @@ def load_config(path: str | Path | None = None) -> StationConfig:
             contact_wheel_hardness_shore=float(b.get("contact_wheel_hardness_shore", 60)),
             grit=int(b.get("grit", 60)),
             preston=preston,
+            contact=contact,
         )
     return StationConfig(robot=robot, rws=rws, collision=collision, belts=belts)

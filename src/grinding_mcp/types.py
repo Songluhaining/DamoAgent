@@ -40,6 +40,27 @@ class GrindStep:
     dwell_s: float = 0.0
 
 
+# --- 输入：工件表面 ------------------------------------------------------
+
+@dataclass
+class Workpiece:
+    """工件表面点云 + 逐点法向，定义在工件自身坐标系里。
+
+    点云读取层（workpiece/）产出。points/normals 是等长数组，一一对应。
+    frame 记录点云所在坐标系（工件系/机器人系/扫描仪系），后续摆位要据此换算。
+    大数组留 server 侧，用 workpiece_id 引用，不进对话上下文。
+    """
+    workpiece_id: str
+    name: str
+    points: list[tuple[float, float, float]]      # mm，工件系
+    normals: list[tuple[float, float, float]]     # 单位向量，外法向
+    frame: str = "workpiece"                       # workpiece | robot | scanner
+    source: str = ""                               # 来源说明（文件/合成）
+
+    def __len__(self) -> int:
+        return len(self.points)
+
+
 # --- 求解层产出（数值，非 LLM） ------------------------------------------
 
 @dataclass
@@ -80,6 +101,38 @@ class TargetSet:
     targets: list[RobTarget]         # 完整数组留这里，不进上下文
     removal: RemovalField
     posture_cost: float = 0.0        # 姿态代价（越小越好，如刚度倒数）
+
+
+# --- 规划层产出（方案） --------------------------------------------------
+
+@dataclass
+class BeltPlan:
+    """方案里针对一条带的一段：分到多少去除量、推荐什么工艺参数、生成了哪些点。"""
+    order: int
+    belt_id: str
+    grit: int
+    apportioned_removal_mm: float    # 分给这条带的去除量
+    contact_depth_mm: float          # 反解出的推荐压深
+    passes: int                      # 反解出的推荐遍数
+    feed_mm_s: float
+    predicted_removal_mm: float      # 用推荐参数正向预测的实际去除（应≈分配值）
+    targets_id: str                  # 该段生成的 robtarget 集合（存 ledger）
+    point_count: int
+    reachable_count: int
+
+
+@dataclass
+class GrindPlan:
+    """一份完整打磨方案：工件 + 需求 → 带序 + 逐带工艺参数 + robtarget。
+
+    这是「给定打磨方案」的产物。数值内核（摆位、Preston 反解）算，带序与分配是可被
+    智能体覆盖的启发式默认。大数组（robtarget）留 ledger，本对象只带摘要。
+    """
+    plan_id: str
+    spec_id: str
+    workpiece_id: str
+    belt_plans: list[BeltPlan] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)   # 占位系数/暂定几何等风险提示
 
 
 # --- 仿真层产出 ----------------------------------------------------------

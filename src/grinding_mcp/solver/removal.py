@@ -69,6 +69,57 @@ def predict(
     )
 
 
+def removal_per_pass(
+    contact_depth_mm: float, feed_mm_s: float, seg_len_mm: float, belt: BeltParams
+) -> float:
+    """单遍、单点的去除深度（mm）。planner 反解时的正向内核。
+
+    dh_pass = kp · p^a · vs^b · (seg_len/feed)
+    """
+    p = max(contact_depth_mm, 1e-6)
+    vs = belt.belt_speed_m_s * 1000.0
+    dt = max(seg_len_mm, 1e-6) / max(feed_mm_s, 1e-6)
+    return belt.preston.kp * (p ** belt.preston.p_exp) * (vs ** belt.preston.v_exp) * dt
+
+
+def solve_depth_for_removal(
+    target_removal_mm: float,
+    passes: int,
+    feed_mm_s: float,
+    seg_len_mm: float,
+    belt: BeltParams,
+) -> float:
+    """反解：给定目标去除量与遍数，求所需压入深度（mm）。
+
+    对 dh = kp·p^a·vs^b·dt·passes 解 p：
+        p = (target / (kp·vs^b·dt·passes))^(1/a)
+    a=1（线性）时就是简单除法。这是「给定打磨方案」的数值内核之一。
+    """
+    vs = belt.belt_speed_m_s * 1000.0
+    dt = max(seg_len_mm, 1e-6) / max(feed_mm_s, 1e-6)
+    denom = belt.preston.kp * (vs ** belt.preston.v_exp) * dt * max(passes, 1)
+    if denom <= 0:
+        return 0.0
+    ratio = target_removal_mm / denom
+    if ratio <= 0:
+        return 0.0
+    return float(ratio ** (1.0 / belt.preston.p_exp))
+
+
+def solve_passes_for_removal(
+    target_removal_mm: float,
+    contact_depth_mm: float,
+    feed_mm_s: float,
+    seg_len_mm: float,
+    belt: BeltParams,
+) -> int:
+    """反解：给定目标去除量与压深，求所需遍数（向上取整，至少 1）。"""
+    per = removal_per_pass(contact_depth_mm, feed_mm_s, seg_len_mm, belt)
+    if per <= 0:
+        return 1
+    return max(1, int(np.ceil(target_removal_mm / per)))
+
+
 def fit_from_history(records: list[dict]) -> dict[str, tuple[float, float, float]]:
     """占位：从历史磨削数据拟合各带 (kp, p_exp, v_exp)。
 

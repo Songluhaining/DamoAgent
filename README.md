@@ -57,6 +57,8 @@ grinding-mcp（本仓库）
 |---|---|
 | `grinding_station_info` | 机器人/4 条带参数/连接状态 |
 | `grinding_register_spec` | 登记打磨规格（智能体产出） |
+| `grinding_load_workpiece` | 加载工件点云（合成圆角块 / xyz 文本），存 server 侧回摘要+ID |
+| `grinding_plan` | **工件+规格→打磨方案**：带序+逐带工艺参数+robtarget（一步式） |
 | `grinding_add_step` | 添加子步骤（带/区域/工艺参数） |
 | `grinding_list_workflow` | 列出工作流步骤 |
 | `grinding_generate_targets` | 求解：接触点→姿态→去除，返回摘要+ID |
@@ -68,15 +70,25 @@ grinding-mcp（本仓库）
 所有工具只回**摘要 + ID**，robtarget/关节数组留在 server 侧——既防上下文爆炸，也守
 hermes「对话前缀缓存不可变」的硬性不变量。
 
-## 现状（v0.1 骨架）
+## 现状（v0.2 骨架）
 
+- ✅ **工件+需求+带参数 → 打磨方案** 一步式（`grinding_plan`）：排带序、分配去除量、
+  Preston 反解每带压深/遍数、逐点摆位出 robtarget。反解与正向预测**精确自洽**（误差 0%）
+- ✅ **接触几何已从 490 个示教点标定**（`calibrate.py` 磨削段平面拟合，残差 2~12mm），
+  写进 `belts.yaml` 的 `contact` 段；lun1 侧法向一致指向 -Y，可复算
+- ✅ **摆位方向修正**（`solver/placement.py`）：按站台真实的「夹工件蹭砂带」约定——
+  把工件点摆到砂带接触点、法向对齐、冗余角显式暴露。能复现示教签名（平面姿态不变、
+  圆角姿态跟随法向扫）。旧 baseline 的反向约定已弃用
+- ✅ **可插拔点云读取层**（`workpiece/`）：合成圆角块（自带精确法向）跑通闭环，
+  xyz 文本读取占位；真实 PLY/PCD/STL 按同一接口加，上层不改
 - ✅ 全链路可**空跑**：不装 RobotStudio，桩模式返回结构正确的假数据，ReAct 闭环连得通
-- ✅ 求解层是可插拔接口 + baseline 占位（冗余角固定 0，仅对准法向）
-- ✅ RAPID 生成对准站台实际定义（`damo_routine` 空壳、`Sltyuan/lun1` 等工具/工件）
+- ✅ 风险如实带出：占位系数、暂定几何、坐标系未核实都进 `warnings`，绝不吞掉
 - ⬜ RWS 2.0 真实执行时序 —— 待换到装好 RobotStudio 的机器后实现并核实端点
 - ⬜ RobotStudio Add-in 碰撞桥（C#）—— 站台层碰撞的必需件
-- ⬜ 冗余角姿态优化算法 —— 替换 `solver/baseline.py`（参考 FRIK / 分层 DP / PyRoki）
+- ⬜ 冗余角姿态优化算法 —— 现固定 φ=0，替换为搜索最优 φ（参考 FRIK / 分层 DP / PyRoki）
 - ⬜ Preston 系数拟合 —— `solver/removal.py:fit_from_history`，用你的 4 条带历史数据
+- ⬜ 坐标系换算 —— 示教点在 `Lun*_slt` 槽位系，与带 wobj 差偏置帧，待站台核实
+- ⬜ 装夹位姿标定 —— 摆位现假设 TCP 在工件原点（p_tcp=0），真实偏置待标定
 
 ## 站台事实（来自 E:\Myself\cs1111 勘察）
 

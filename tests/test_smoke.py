@@ -97,3 +97,97 @@ def test_ledger_rejects_unknown_id():
         assert False, "应当抛 KeyError"
     except KeyError:
         pass
+
+
+def test_calibration_recovers_contact_geometry():
+    """接触几何应已从示教点标定进配置：至少一条带的法向接近实测（-Y 主导）。"""
+    cfg = load_config()
+    with_contact = [b for b in cfg.belts.values() if b.contact is not None]
+    assert with_contact, "标定后应至少一条带有接触几何"
+    # belt4（Cfx/lun1）最干净，法向应以 -Y 为主
+    b4 = cfg.belt("belt4")
+    assert b4.contact is not None and b4.contact.trusted is True
+    assert abs(b4.contact.normal[1]) > 0.9   # 法向主要沿 Y
+
+
+def test_synthetic_workpiece_has_unit_normals():
+    from grinding_mcp.workpiece import SyntheticSource
+    wp = SyntheticSource().load()
+    assert len(wp.points) == len(wp.normals) > 0
+    import math
+    for nx, ny, nz in wp.normals:
+        assert math.isclose(math.sqrt(nx * nx + ny * ny + nz * nz), 1.0, abs_tol=1e-6)
+
+
+def test_placement_reproduces_taught_signature():
+    """摆位方向必须对：磨平面时姿态不变、位置移动；磨圆角时姿态跟随法向扫。"""
+    import math
+
+    import numpy as np
+
+    from grinding_mcp.solver.placement import build_rotation, place_point
+
+    cfg = load_config()
+    belt = cfg.belt("belt4")
+    n = np.array(belt.contact.normal)
+
+    # R·m 应对齐到 -n（工件外法向压向砂带）
+    R = build_rotation(np.array([0, 0, 1.0]), n, 0.0)
+    assert np.allclose(R @ np.array([0, 0, 1.0]), -n / np.linalg.norm(n), atol=1e-3)
+
+    def qang(a, b):
+        return math.degrees(2 * math.acos(min(abs(float(np.dot(a, b))), 1.0)))
+
+    # 平面：法向恒定 → 姿态不变、位置随点移动
+    flat = [place_point(np.array([x, 0, 0.0]), np.array([0, 0, 1.0]), belt, 0.15, 0.0, i)
+            for i, x in enumerate((0, 10, 20, 30))]
+    assert qang(np.array(flat[0].rot), np.array(flat[-1].rot)) < 1.0
+    assert np.linalg.norm(np.array(flat[0].trans) - np.array(flat[-1].trans)) > 25
+
+    # 圆角：法向从 +Z 扫到 +Y → 姿态大幅变化
+    arc = []
+    for i, a in enumerate(np.linspace(0, math.pi / 2, 5)):
+        m = np.array([0.0, math.sin(a), math.cos(a)])
+        arc.append(place_point(np.array([0, 0, 0.0]), m, belt, 0.15, 0.0, i))
+    assert qang(np.array(arc[0].rot), np.array(arc[-1].rot)) > 80
+
+
+def test_plan_inverse_matches_forward():
+    """Preston 反解出的 (压深,遍数) 正向预测应精确回到分配的去除量（未封顶时）。"""
+    from grinding_mcp.task import planner
+    from grinding_mcp.workpiece import SyntheticSource
+
+    cfg = load_config()
+    ledger = Ledger()
+    wp = SyntheticSource().load()
+    spec = workflow_mod.register_spec(
+        ledger, cfg, workpiece="block", belts=["belt1"],
+        grit_sequence=[60], target_removal_mm=0.05, tolerance_mm=0.01,
+    )
+    plan = planner.plan_workflow(
+        ledger, cfg, spec=spec, workpiece=wp,
+        region={"normal_axis": [0, 0, 1], "min_dot": 0.9},
+    )
+    bp = plan.belt_plans[0]
+    assert bp.contact_depth_mm < 0.5   # 未封顶
+    rel = abs(bp.predicted_removal_mm - bp.apportioned_removal_mm) / bp.apportioned_removal_mm
+    assert rel < 0.02, f"反解与正向应自洽，实际相对误差 {rel:.3f}"
+    # robtarget 应确实生成并存进 ledger
+    ts = ledger.get_targets(bp.targets_id)
+    assert len(ts.targets) == bp.point_count > 0
+
+
+def test_plan_flags_placeholder_risks():
+    """方案必须如实带出风险：占位系数、暂定几何——绝不吞掉。"""
+    from grinding_mcp.task import planner
+    from grinding_mcp.workpiece import SyntheticSource
+
+    cfg = load_config()
+    ledger = Ledger()
+    wp = SyntheticSource().load()
+    spec = workflow_mod.register_spec(
+        ledger, cfg, workpiece="block", belts=["belt1", "belt4"],
+        grit_sequence=[60, 400], target_removal_mm=0.2, tolerance_mm=0.05,
+    )
+    plan = planner.plan_workflow(ledger, cfg, spec=spec, workpiece=wp)
+    assert any("占位" in w for w in plan.warnings)

@@ -13,7 +13,7 @@ import threading
 import uuid
 from typing import TypeVar
 
-from .types import GrindSpec, GrindStep, SimResult, TargetSet
+from .types import GrindPlan, GrindSpec, GrindStep, SimResult, TargetSet, Workpiece
 
 T = TypeVar("T")
 
@@ -29,6 +29,8 @@ class Ledger:
         self._steps: dict[str, GrindStep] = {}
         self._targets: dict[str, TargetSet] = {}
         self._sims: dict[str, SimResult] = {}
+        self._workpieces: dict[str, Workpiece] = {}
+        self._plans: dict[str, GrindPlan] = {}
 
     # --- specs ---
     def put_spec(self, spec: GrindSpec) -> None:
@@ -66,6 +68,22 @@ class Ledger:
 
     def get_sim(self, sim_id: str) -> SimResult:
         return self._require(self._sims, sim_id, "sim")
+
+    # --- workpieces（点云留 server 侧，用 ID 引用） ---
+    def put_workpiece(self, wp: Workpiece) -> None:
+        with self._lock:
+            self._workpieces[wp.workpiece_id] = wp
+
+    def get_workpiece(self, workpiece_id: str) -> Workpiece:
+        return self._require(self._workpieces, workpiece_id, "workpiece")
+
+    # --- plans ---
+    def put_plan(self, plan: GrindPlan) -> None:
+        with self._lock:
+            self._plans[plan.plan_id] = plan
+
+    def get_plan(self, plan_id: str) -> GrindPlan:
+        return self._require(self._plans, plan_id, "plan")
 
     # --- 内部 ---
     def _require(self, store: dict[str, T], key: str, kind: str) -> T:

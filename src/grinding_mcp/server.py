@@ -23,8 +23,10 @@ from .sim import collision as collision_mod
 from .sim import rapid as rapid_mod
 from .sim import rws as rws_mod
 from .solver import BaselineSolver, Solver
+from .task import planner as planner_mod
 from .task import workflow as workflow_mod
 from .types import SimResult, TargetSet
+from .workpiece import SyntheticSource, XyzFileSource
 
 mcp = FastMCP("grinding")
 
@@ -117,6 +119,83 @@ def grinding_list_workflow(spec_id: str) -> dict:
              "passes": s.passes, "contact_depth_mm": s.contact_depth_mm}
             for s in steps
         ],
+    }
+
+
+# --- 工件与方案 ---------------------------------------------------------
+
+@mcp.tool()
+def grinding_load_workpiece(
+    source: str = "synthetic",
+    path: str = "",
+    name: str = "",
+) -> dict:
+    """加载工件表面点云。source="synthetic" 用内置圆角块（无需真实数据即可跑通），
+    source="xyz" 从文本文件（每行 x y z[ nx ny nz]）读。点云存 server 侧，只回摘要+ID。
+
+    真实点云（扫描仪 PLY/PCD、CAD STL）到位后按同一接口加读取实现，本工具签名不变。
+    """
+    if source == "xyz":
+        if not path:
+            raise ValueError("source=xyz 需要 path")
+        wp = XyzFileSource(path, name=name).load()
+    else:
+        wp = SyntheticSource(name=name or "synthetic_block").load()
+    _ledger.put_workpiece(wp)
+    return {
+        "workpiece_id": wp.workpiece_id,
+        "name": wp.name,
+        "point_count": len(wp.points),
+        "has_normals": bool(wp.normals),
+        "frame": wp.frame,
+        "source": wp.source,
+    }
+
+
+@mcp.tool()
+def grinding_plan(
+    spec_id: str,
+    workpiece_id: str,
+    region: dict | None = None,
+    feed_mm_s: float = 20.0,
+    max_passes: int = 5,
+    redundancy_angle_deg: float = 0.0,
+) -> dict:
+    """给定工件 + 打磨规格 → 生成完整打磨方案（带序 + 逐带工艺参数 + robtarget）。
+
+    这是「工件+需求+带参数→打磨方案」的一步式入口。内部：按粒度排带序、把目标去除量
+    分配到各带、Preston 反解每带的压深/遍数、对区域每点摆位生成 robtarget。数值全由
+    求解器算（不让 LLM 生成位姿）。每带 robtarget 存 ledger，可直接用其 targets_id 送
+    grinding_simulate / grinding_evaluate 继续 ReAct 闭环。
+
+    region 支持 {"normal_axis":[0,0,1],"min_dot":0.9}（选朝某向的面）或
+    {"indices":[...]}（显式点）或省略（全部点）。
+
+    warnings 会如实带出占位系数/暂定几何/坐标系未核实等风险——这些决定方案能否下真控制器。
+    """
+    spec = _ledger.get_spec(spec_id)
+    wp = _ledger.get_workpiece(workpiece_id)
+    plan = planner_mod.plan_workflow(
+        _ledger, _cfg, spec=spec, workpiece=wp, region=region,
+        feed_mm_s=feed_mm_s, max_passes=max_passes, phi_deg=redundancy_angle_deg,
+    )
+    return {
+        "plan_id": plan.plan_id,
+        "spec_id": plan.spec_id,
+        "workpiece_id": plan.workpiece_id,
+        "belt_plans": [
+            {
+                "order": bp.order, "belt_id": bp.belt_id, "grit": bp.grit,
+                "apportioned_removal_mm": bp.apportioned_removal_mm,
+                "contact_depth_mm": bp.contact_depth_mm, "passes": bp.passes,
+                "feed_mm_s": bp.feed_mm_s,
+                "predicted_removal_mm": bp.predicted_removal_mm,
+                "targets_id": bp.targets_id,
+                "reachable": f"{bp.reachable_count}/{bp.point_count}",
+            }
+            for bp in plan.belt_plans
+        ],
+        "warnings": plan.warnings,
     }
 
 
