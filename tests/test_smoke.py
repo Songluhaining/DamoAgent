@@ -22,7 +22,7 @@ from grinding_mcp.task import decompose as decompose_mod
 from grinding_mcp.task import generate as generate_mod
 from grinding_mcp.task import workflow as workflow_mod
 from grinding_mcp.types import SimResult
-from grinding_mcp.workpiece import SyntheticSource
+from grinding_mcp.workpiece import SyntheticSource, select_region, summarize
 
 
 def _spec(ledger, cfg, belts, target, tol=0.03):
@@ -180,6 +180,93 @@ def test_three_stage_loop_stub_mode():
         agg["total_predicted_removal_mm"],
         sum(ts.removal.mean_mm for ts in target_sets), abs_tol=1e-3,
     )
+
+
+# --- 几何摘要 + 大模型主导拆解 ------------------------------------------
+
+def test_geometry_summary_segments_face_and_edge():
+    """圆角块应切出 1 个上表面（face）+ 1 条圆角棱（edge），点数不丢。"""
+    wp = SyntheticSource().load()
+    overall, cands = summarize(wp)
+    assert overall["point_count"] == len(wp.points)
+    kinds = [c.kind for c in cands]
+    assert "face" in kinds and "edge" in kinds
+    assert sum(c.point_count for c in cands) == len(wp.points)
+    # 上表面法向应近 +Z
+    face = next(c for c in cands if c.kind == "face")
+    assert face.normal[2] > 0.9
+
+
+def test_region_id_selection_roundtrips():
+    """inspect 把候选区域存进工件；用 region_id 应能选回同一批点。"""
+    wp = SyntheticSource().load()
+    _, cands = summarize(wp)
+    rid = "region_test"
+    wp.regions[rid] = cands[0].indices
+    assert select_region(wp, {"region_id": rid}) == cands[0].indices
+    # 未知 region_id → 空
+    assert select_region(wp, {"region_id": "nope"}) == []
+
+
+def test_add_step_flags_empty_region():
+    """兜底：区域选不到点时 add_step 给 warning，但不阻断。"""
+    cfg = load_config()
+    ledger = Ledger()
+    wp = SyntheticSource().load()
+    ledger.put_workpiece(wp)
+    spec = _spec(ledger, cfg, ["belt1"], 0.1)
+    step, warnings = workflow_mod.add_step(
+        ledger, cfg, spec_id=spec.spec_id, belt_id="belt1",
+        region={"region_id": "nonexistent"}, order=0,
+        workpiece_id=wp.workpiece_id, target_removal_mm=0.1,
+    )
+    assert step.step_id
+    assert any("选不到" in w for w in warnings)
+
+
+def test_grit_order_fallback_warns_on_reverse():
+    """兜底：子任务带序非粗→精时给提醒。"""
+    cfg = load_config()
+    ledger = Ledger()
+    wp = SyntheticSource().load()
+    ledger.put_workpiece(wp)
+    spec = _spec(ledger, cfg, ["belt1", "belt4"], 0.1)
+    # 故意精带在前（belt4 grit400）、粗带在后（belt1 grit60）
+    s0, _ = workflow_mod.add_step(ledger, cfg, spec_id=spec.spec_id, belt_id="belt4",
+                                  region={}, order=0, workpiece_id=wp.workpiece_id, target_removal_mm=0.03)
+    s1, _ = workflow_mod.add_step(ledger, cfg, spec_id=spec.spec_id, belt_id="belt1",
+                                  region={}, order=1, workpiece_id=wp.workpiece_id, target_removal_mm=0.07)
+    warns = decompose_mod.check_grit_order(cfg, [s0, s1])
+    assert warns and "粗→精" in warns[0]
+
+
+def test_llm_led_decomposition_different_regions():
+    """大模型主导：不同区域派不同带（上表面粗磨、圆角精修），全链路跑通。"""
+    cfg = load_config()
+    ledger = Ledger()
+    solver = BaselineTargetSolver()
+    wp = SyntheticSource().load()
+    ledger.put_workpiece(wp)
+    _, cands = summarize(wp)
+    for i, c in enumerate(cands):
+        wp.regions[f"r{i}"] = c.indices
+    face_i = next(i for i, c in enumerate(cands) if c.kind == "face")
+    edge_i = next(i for i, c in enumerate(cands) if c.kind == "edge")
+
+    spec = _spec(ledger, cfg, ["belt1", "belt4"], 0.15, tol=0.05)
+    s_face, _ = workflow_mod.add_step(ledger, cfg, spec_id=spec.spec_id, belt_id="belt1",
+                                      region={"region_id": f"r{face_i}"}, order=0,
+                                      workpiece_id=wp.workpiece_id, target_removal_mm=0.12)
+    s_edge, _ = workflow_mod.add_step(ledger, cfg, spec_id=spec.spec_id, belt_id="belt4",
+                                      region={"region_id": f"r{edge_i}"}, order=1,
+                                      workpiece_id=wp.workpiece_id, target_removal_mm=0.03)
+    from grinding_mcp.task import generate as generate_mod
+    ts_face, _ = generate_mod.generate_targets(ledger, cfg, solver, s_face)
+    ts_edge, _ = generate_mod.generate_targets(ledger, cfg, solver, s_edge)
+    # 两个子任务的点数应对应各自区域（不同）
+    assert len(ts_face.targets) == cands[face_i].point_count
+    assert len(ts_edge.targets) == cands[edge_i].point_count
+    assert len(ts_face.targets) != len(ts_edge.targets)
 
 
 def test_ledger_rejects_unknown_id():

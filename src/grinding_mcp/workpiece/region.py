@@ -3,6 +3,7 @@
 区域由第一步（任务编排）定义为一个选择器 dict，第二步（细化）在这里应用它取点。
 支持的 region：
     None / {}                                全部点
+    {"region_id": "region_xxx"}               引用 inspect_workpiece 切好的命名区域（推荐）
     {"indices": [...]}                        显式下标
     {"normal_axis": [0,0,1], "min_dot": 0.7}  只留法向与某轴夹角小的（如上表面）
 
@@ -21,6 +22,8 @@ def select_region(wp: Workpiece, region: dict | None) -> list[int]:
     n = len(wp.points)
     if not region:
         return list(range(n))
+    if "region_id" in region:
+        return list(wp.regions.get(region["region_id"], []))
     if "indices" in region:
         return [int(i) for i in region["indices"] if 0 <= int(i) < n]
     if "normal_axis" in region and wp.normals:

@@ -1,11 +1,12 @@
-"""第一步：任务编排。工件 + 打磨规格 → 一批子任务（去哪磨 + 用哪条带 + 磨掉多少）。
+"""第一步：任务编排的**算法兜底自动建议**。工件 + 规格 → 一批子任务（去哪磨+哪条带+磨多少）。
 
-**不含打磨点**——只定意图，供智能体审核后再进第二步细化。分工：带序、去除量分配是
-离散工艺决策，本应归智能体；这里给一个合理的默认建议（粒度粗→精、几何级数分配），
-智能体可通过 regions/apportion 参数覆盖，或改用 workflow.add_step 手工逐个编排子任务。
+拆解本身由**大模型主导**：它用 inspect_workpiece 看懂几何、决定哪块区域用哪条带磨多少，
+通过 workflow.add_step 逐个下子任务。本模块是**兜底/起点**——当大模型想要一个默认方案时，
+按确定性规则给建议：带序粒度粗→精、去除量几何级数分配（粗带担大头）。大模型可通过
+regions/apportion 覆盖，或完全不用它、自己用 add_step 编排。
 
-风险提示（占位系数/暂定几何/无接触几何）在此就带出，因为智能体是在这一步审子任务、
-决定用哪条带的。
+不含打磨点——只定意图，供审核后再进第二步细化。风险提示（占位系数/暂定几何/无接触
+几何）在此带出，因为审子任务、选带就在这一步。
 """
 
 from __future__ import annotations
@@ -18,6 +19,19 @@ from ..types import GrindSpec, GrindStep, Workpiece
 def order_belts_by_grit(cfg: StationConfig, belt_ids: list[str]) -> list[str]:
     """按粒度粗→精（grit 数字小→大）排序。"""
     return sorted(belt_ids, key=lambda b: cfg.belt(b).grit)
+
+
+def check_grit_order(cfg: StationConfig, steps: list[GrindStep]) -> list[str]:
+    """兜底：大模型自排的子任务顺序若不是粒度粗→精，给个提醒（不阻断，可能有意为之）。
+
+    粗→精是打磨的物理常识（先粗磨去量、再细磨修面）。大模型主导拆解时，这条确定性规则
+    由代码把关：发现 grit 随 order 非单调递增就提醒，让它确认是不是有意跳序。
+    """
+    ordered = sorted(steps, key=lambda s: s.order)
+    grits = [cfg.belt(s.belt_id).grit for s in ordered]
+    if any(a > b for a, b in zip(grits, grits[1:])):
+        return [f"子任务带序非粗→精（grit 序列 {grits}）：确认是否有意，否则先粗后精。"]
+    return []
 
 
 def apportion_removal(total_removal: float, n: int) -> list[float]:

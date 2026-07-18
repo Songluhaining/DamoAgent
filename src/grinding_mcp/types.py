@@ -65,6 +65,9 @@ class Workpiece:
     normals: list[tuple[float, float, float]]     # 单位向量，外法向
     frame: str = "workpiece"                       # workpiece | robot | scanner
     source: str = ""                               # 来源说明（文件/合成）
+    # 几何摘要（inspect_workpiece）切出的命名区域：region_id → 点下标。
+    # 索引留这里（server 侧），子任务用 {"region_id": ...} 引用，不进对话上下文。
+    regions: dict[str, list[int]] = field(default_factory=dict)
 
     def __len__(self) -> int:
         return len(self.points)

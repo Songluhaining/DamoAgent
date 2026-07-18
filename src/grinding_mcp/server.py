@@ -31,7 +31,7 @@ from .task import generate as generate_mod
 from .task import planner as planner_mod
 from .task import workflow as workflow_mod
 from .types import SimResult
-from .workpiece import SyntheticSource, XyzFileSource
+from .workpiece import SyntheticSource, XyzFileSource, select_region, summarize
 
 mcp = FastMCP("grinding")
 
@@ -119,6 +119,36 @@ def grinding_load_workpiece(
 # --- 第一步：任务编排（得到子任务，不含点） ------------------------------
 
 @mcp.tool()
+def grinding_inspect_workpiece(workpiece_id: str) -> dict:
+    """看懂工件几何：把点云自动切成候选区域（面/棱），供大模型决定「去哪磨」。
+
+    返回每个候选区域的 region_id、类型（face/edge）、代表法向、点数、形心、包围盒。
+    点索引留 server 侧（存进工件），大模型用 region_id 在 add_step 里引用某块区域——
+    既让它按几何做拆解决策，又不把点数组灌进上下文。
+
+    典型用法：inspect_workpiece 看有哪些面/棱 → 对每块决定用哪条带、磨多少 →
+    grinding_add_step(region={"region_id": ...}, belt_id=..., target_removal_mm=...)。
+    """
+    wp = _ledger.get_workpiece(workpiece_id)
+    overall, cands = summarize(wp)
+    regions = []
+    for c in cands:
+        rid = new_id("region")
+        wp.regions[rid] = c.indices          # 索引留 server 侧
+        regions.append({
+            "region_id": rid, "kind": c.kind, "representative_normal": list(c.normal),
+            "point_count": c.point_count, "centroid": list(c.centroid),
+            "bbox_min": list(c.bbox_min), "bbox_max": list(c.bbox_max),
+        })
+    return {
+        "workpiece_id": workpiece_id,
+        **overall,
+        "regions": regions,
+        "note": "用 region_id 在 add_step 里引用某块区域；face=平面片，edge=棱/圆角/过渡。",
+    }
+
+
+@mcp.tool()
 def grinding_decompose(
     spec_id: str,
     workpiece_id: str,
@@ -166,34 +196,48 @@ def grinding_add_step(
     target_removal_mm: float = 0.0,
     feed_mm_s: float = 20.0,
 ) -> dict:
-    """手工添加一个子任务（第一步的手动入口，与 decompose 的自动分解并列）。
+    """大模型主导拆解的入口：手工添加一个子任务（与 decompose 的自动建议并列）。
 
     只定意图（区域 + 带 + 目标去除量）；压深/遍数/打磨点由第二步 generate_targets 填。
-    region 支持 {"normal_axis":[0,0,1],"min_dot":0.9} 或 {"indices":[...]}。
+    region 推荐用 {"region_id": ...}（来自 inspect_workpiece 切好的面/棱），也支持
+    {"normal_axis":[0,0,1],"min_dot":0.9} 或 {"indices":[...]}。
+
+    代码只做兜底校验：区域选不到点、无接触几何等进 warnings 提醒，不阻断决策。
     """
-    step = workflow_mod.add_step(
+    step, warnings = workflow_mod.add_step(
         _ledger, _cfg,
         spec_id=spec_id, belt_id=belt_id, region=region, order=order,
         workpiece_id=workpiece_id, target_removal_mm=target_removal_mm, feed_mm_s=feed_mm_s,
     )
+    point_count = None
+    if workpiece_id:
+        wp = _ledger.get_workpiece(workpiece_id)
+        point_count = len(select_region(wp, region))
     return {"step_id": step.step_id, "belt_id": step.belt_id, "order": step.order,
-            "target_removal_mm": step.target_removal_mm}
+            "target_removal_mm": step.target_removal_mm,
+            "region_point_count": point_count, "warnings": warnings}
 
 
 @mcp.tool()
 def grinding_list_workflow(spec_id: str) -> dict:
-    """按顺序列出某规格下的所有子任务摘要，标出是否已细化（第二步）。"""
+    """按顺序列出某规格下的所有子任务摘要，标出是否已细化（第二步）。
+
+    附兜底检查：带序若不是粒度粗→精，给提醒（大模型主导拆解时的确定性护栏）。
+    """
     steps = _ledger.steps_for_spec(spec_id)
+    warnings = decompose_mod.check_grit_order(_cfg, steps)
     return {
         "spec_id": spec_id,
         "subtask_count": len(steps),
         "subtasks": [
             {"step_id": s.step_id, "order": s.order, "belt_id": s.belt_id,
+             "grit": _cfg.belt(s.belt_id).grit,
              "target_removal_mm": s.target_removal_mm,
              "refined": bool(s.targets_id),
              "contact_depth_mm": s.contact_depth_mm, "passes": s.passes}
             for s in steps
         ],
+        "warnings": warnings,
     }
 
 
