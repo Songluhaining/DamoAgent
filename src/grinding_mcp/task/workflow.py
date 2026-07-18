@@ -49,13 +49,19 @@ def add_step(
     belt_id: str,
     region: dict,
     order: int,
-    passes: int = 1,
+    workpiece_id: str = "",
+    target_removal_mm: float = 0.0,
     feed_mm_s: float = 20.0,
-    contact_depth_mm: float = 0.1,
     dwell_s: float = 0.0,
 ) -> GrindStep:
+    """手工添加一个子任务（第一步的手动入口，与 decompose 的自动分解并列）。
+
+    只定意图（区域 + 带 + 目标去除量）；压深/遍数/打磨点由第二步 generate_targets 填。
+    """
     ledger.get_spec(spec_id)   # 校验 spec 存在
     cfg.belt(belt_id)          # 校验带存在
+    if workpiece_id:
+        ledger.get_workpiece(workpiece_id)   # 校验工件存在
 
     step = GrindStep(
         step_id=new_id("step"),
@@ -63,9 +69,9 @@ def add_step(
         belt_id=belt_id,
         order=order,
         region=region,
-        passes=passes,
+        workpiece_id=workpiece_id,
+        target_removal_mm=target_removal_mm,
         feed_mm_s=feed_mm_s,
-        contact_depth_mm=contact_depth_mm,
         dwell_s=dwell_s,
     )
     ledger.put_step(step)

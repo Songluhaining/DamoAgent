@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+from .ledger import Ledger
 from .types import Evaluation, GrindSpec, SimResult, TargetSet
 
 
@@ -84,3 +85,53 @@ def evaluate(sim: SimResult, ts: TargetSet, spec: GrindSpec) -> Evaluation:
         residual_regions=residual_regions[:50],   # 摘要，避免灌爆上下文
         suggestions=suggestions,
     )
+
+
+def evaluate_plan(ledger: Ledger, spec: GrindSpec) -> dict:
+    """方案级聚合评价：整条带序累加的去除量是否达标（单步 evaluate 只看一条带）。
+
+    多带方案里去除量是各带累加的——粗带担大头、精带精修。单步 evaluate 拿单带去除对
+    总目标判，必然「不达标」；这里把全部子任务的预测去除**累加**再对总目标 ± 允差判，
+    才是「整套方案磨够没有」的正确问法。仅看工艺维度；运动学仍由各步 evaluate 分别把关。
+    """
+    steps = ledger.steps_for_spec(spec.spec_id)
+    target, tol = spec.target_removal_mm, spec.tolerance_mm
+
+    per_belt = []
+    total_mean = 0.0
+    refined = 0
+    for s in steps:
+        entry = {
+            "step_id": s.step_id, "belt_id": s.belt_id, "order": s.order,
+            "target_removal_mm": s.target_removal_mm,
+            "refined": bool(s.targets_id),
+        }
+        if s.targets_id:
+            refined += 1
+            ts = ledger.get_targets(s.targets_id)
+            entry["predicted_removal_mm"] = round(ts.removal.mean_mm, 4)
+            total_mean += ts.removal.mean_mm
+        per_belt.append(entry)
+
+    all_refined = refined == len(steps) and steps
+    in_tol = all_refined and (target - tol) <= total_mean <= (target + tol)
+    suggestions: list[str] = []
+    if not steps:
+        suggestions.append("方案无子任务：先跑第一步 decompose。")
+    elif not all_refined:
+        suggestions.append(f"{len(steps) - refined} 个子任务尚未细化：对其跑第二步 generate_targets。")
+    elif total_mean < target - tol:
+        suggestions.append("累计去除不足：增大某带压深/遍数，或提高某子任务的分配去除量。")
+    elif total_mean > target + tol:
+        suggestions.append("累计去除超标：减小某带压深/遍数，或下调分配去除量。")
+
+    return {
+        "spec_id": spec.spec_id,
+        "target_removal_mm": target,
+        "tolerance_mm": tol,
+        "total_predicted_removal_mm": round(total_mean, 4),
+        "in_tolerance": in_tol,
+        "all_refined": bool(all_refined),
+        "belt_breakdown": per_belt,
+        "suggestions": suggestions,
+    }

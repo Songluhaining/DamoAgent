@@ -1,11 +1,13 @@
-"""求解层：接触点 → 姿态优化 → 去除预测。
+"""求解层：第二步（细化）的可插拔接缝——子任务 → 轨迹 + 每个打磨点。
 
-这是整个系统的**可插拔接缝**。上层（server/仿真/评价）只依赖 base.Solver 抽象接口；
-baseline.BaselineSolver 是能跑通闭环的占位实现；你后面设计的冗余角优化算法
-（FRIK / 分层动态规划 / PyRoki）实现同一个接口，替换即可，上层一行不改。
+上层只依赖 base.TargetSolver 抽象接口；baseline.BaselineTargetSolver 是能跑通闭环的
+占位实现（最近邻排序 + placement 摆位 + Preston 反解，冗余角 φ=0）；你后面设计的冗余角
+优化算法（FRIK / 分层动态规划 / PyRoki）实现同一个 solve 接口，替换即可，上层一行不改。
+
+placement（摆位几何）与 removal（Preston 去除模型）是可复用内核，任何 TargetSolver 都能调。
 """
 
-from .base import Solver
-from .baseline import BaselineSolver
+from .base import TargetSolution, TargetSolver
+from .baseline import BaselineTargetSolver
 
-__all__ = ["Solver", "BaselineSolver"]
+__all__ = ["TargetSolver", "TargetSolution", "BaselineTargetSolver"]

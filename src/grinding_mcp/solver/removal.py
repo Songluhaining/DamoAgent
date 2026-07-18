@@ -36,9 +36,15 @@ def _segment_lengths(targets: list[RobTarget]) -> np.ndarray:
     return per_point
 
 
-def predict(
-    targets: list[RobTarget], step: GrindStep, belt: BeltParams
+def predict_with(
+    targets: list[RobTarget],
+    belt: BeltParams,
+    contact_depth_mm: float,
+    passes: int,
+    feed_mm_s: float,
+    dwell_s: float = 0.0,
 ) -> RemovalField:
+    """按显式 (压深, 遍数, 进给) 正向预测逐点去除量分布。dh = kp·p^a·vs^b·dt。"""
     if not targets:
         return RemovalField()
 
@@ -48,15 +54,15 @@ def predict(
 
     # 压强 p：纯位置控制下用压入深度做一阶代理（占位；严格版走 Hertz 弹性接触，
     # 压强沿接触宽度非均匀分布，且依赖接触轮 shore 硬度）。
-    p = max(step.contact_depth_mm, 1e-6)
+    p = max(contact_depth_mm, 1e-6)
 
     # 滑动速度 vs ≈ 带速（m/s → mm/s）
     vs = belt.belt_speed_m_s * 1000.0
 
     # 驻留时间 dt：段弧长 / 进给，乘遍数
-    feed = max(step.feed_mm_s, 1e-6)
-    dwell_per_point = _segment_lengths(targets) / feed * max(step.passes, 1)
-    dwell_per_point += step.dwell_s
+    feed = max(feed_mm_s, 1e-6)
+    dwell_per_point = _segment_lengths(targets) / feed * max(passes, 1)
+    dwell_per_point += dwell_s
 
     dh = kp * (p ** a) * (vs ** b) * dwell_per_point   # 逐点去除深度 mm
     dh = np.clip(dh, 0.0, None)
@@ -67,6 +73,14 @@ def predict(
         min_mm=float(dh.min()),
         max_mm=float(dh.max()),
     )
+
+
+def predict(
+    targets: list[RobTarget], step: GrindStep, belt: BeltParams
+) -> RemovalField:
+    """从子任务 step 读工艺参数做正向预测（predict_with 的便捷包装）。"""
+    return predict_with(
+        targets, belt, step.contact_depth_mm, step.passes, step.feed_mm_s, step.dwell_s)
 
 
 def removal_per_pass(

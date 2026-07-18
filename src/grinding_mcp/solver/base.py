@@ -1,41 +1,52 @@
-"""求解层抽象接口。
+"""第二步（细化）的可插拔接口：子任务的区域点 → 轨迹 + 每个打磨点（robtarget）。
 
-三个方法对应打磨规划的三个数值子问题：
-  contact_points   几何 → 接触点+法向（5-DOF 约束）
-  optimize_posture 每点冗余角优化 → robtarget（用掉那第 6 个自由度）
-  predict_removal  路径 → 去除量分布（Preston）
+这是整个系统留给「利用现有方法或你后面设计的算法」的接缝。第一步（任务编排）已经定好
+「去哪磨、用哪条带、磨掉多少」；第二步在此把它细化成具体的移动轨迹和逐点最优姿态。
 
-功能冗余原理：打磨只约束接触点位置(3) + 接触法向(2) = 5 DOF；机器人有 6 DOF，
-绕接触法向那 1 转是自由的。转它不改变材料去除，但改变关节构型与笛卡尔刚度。
-optimize_posture 的任务就是为每个点选这个角，主目标是**刚度最大**（抗磨削力变形），
-次目标是关节平滑、避奇异、避限位、避碰撞。
+TargetSolver.solve 的职责：
+  排轨迹（点的访问顺序）→ 逐点摆位（用掉冗余角那第 6 自由度）→ Preston 反解压深/遍数
+  → 正向预测去除量。返回 TargetSolution。
 
-注意：砂带不是旋转对称的磨盘——它有明确运行方向。所以冗余角在这里同时是姿态变量
-和工艺变量（改变工件与带速夹角 → 改变 Preston 的相对滑动速度与磨纹方向）。
-你的算法需要把这一耦合纳入代价函数。
+功能冗余原理：打磨只约束接触点位置(3) + 接触法向(2) = 5 DOF；机器人有 6 DOF，绕接触
+法向那 1 转是自由的（冗余角 φ）。转它不改变材料去除，但改变关节构型刚度；且砂带有走向，
+φ 还改变工件相对带速的夹角。baseline 取 φ=0；真优化在此搜索 φ 使刚度最大——你的算法
+（FRIK / 分层动态规划 / PyRoki）实现同一个 solve 接口，替换即可，上层一行不改。
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 from ..config import BeltParams
-from ..types import ContactPoint, GrindStep, RemovalField, RobTarget
+from ..types import RemovalField, RobTarget
 
 
-class Solver(ABC):
+@dataclass
+class TargetSolution:
+    """第二步的产出：一个子任务细化后的轨迹点 + 反解出的工艺参数。"""
+    targets: list[RobTarget] = field(default_factory=list)   # 按轨迹顺序
+    contact_depth_mm: float = 0.0
+    passes: int = 0
+    removal: RemovalField = field(default_factory=RemovalField)
+
+
+class TargetSolver(ABC):
     @abstractmethod
-    def contact_points(self, step: GrindStep, belt: BeltParams) -> list[ContactPoint]:
-        """由子步骤的区域描述生成接触点序列（在带的 wobj 坐标系里）。"""
+    def solve(
+        self,
+        *,
+        points: list[tuple[float, float, float]],
+        normals: list[tuple[float, float, float]],
+        belt: BeltParams,
+        target_removal_mm: float,
+        feed_mm_s: float,
+        max_passes: int,
+        phi_deg: float,
+        warnings: list[str],
+    ) -> TargetSolution:
+        """把一个子任务的区域点（工件系，含法向）细化成轨迹 + robtarget + 工艺参数。
 
-    @abstractmethod
-    def optimize_posture(
-        self, points: list[ContactPoint], belt: BeltParams
-    ) -> tuple[list[RobTarget], float]:
-        """为每个接触点求最优姿态（选冗余角）。返回 (robtargets, 总姿态代价)。"""
-
-    @abstractmethod
-    def predict_removal(
-        self, targets: list[RobTarget], step: GrindStep, belt: BeltParams
-    ) -> RemovalField:
-        """预测这条路径的去除量分布。"""
+        points/normals 一一对应，在工件系里。belt.contact 给出砂带接触几何（wobj 系）。
+        达不到目标去除量等风险追加进 warnings（绝不吞掉）。
+        """

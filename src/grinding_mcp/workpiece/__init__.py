@@ -5,7 +5,8 @@
 """
 
 from .base import WorkpieceSource
+from .region import select_region
 from .synthetic import SyntheticSource
 from .xyzfile import XyzFileSource
 
-__all__ = ["WorkpieceSource", "SyntheticSource", "XyzFileSource"]
+__all__ = ["WorkpieceSource", "SyntheticSource", "XyzFileSource", "select_region"]

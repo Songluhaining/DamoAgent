@@ -1,130 +1,117 @@
-"""baseline 求解实现——能把闭环跑通的占位版，不是最优。
+"""baseline 第二步求解：能跑通闭环的占位实现，非最优。
 
-刻意做得简单、可预测，作用有二：
-  1. 在你的真算法就绪前，让整个 parse→plan→solve→simulate→evaluate 闭环立刻可运行；
+作用有二：
+  1. 在你的真算法就绪前，让「子任务 → 轨迹 + 打磨点」这一步立刻可运行；
   2. 作为回归基准——真算法的刚度/节拍/去除均匀度应当优于它。
 
 三处 baseline 简化（都是你后面要替换的点）：
-  contact_points   直接取区域里显式给的点集，或在包围盒上等距采样；法向暂用 +Z。
-  optimize_posture 冗余角固定为 0，不做刚度优化，仅让工具轴对齐接触法向。
-  predict_removal  直接调 removal.predict（Preston 占位系数）。
+  排轨迹     贪心最近邻，仅消除访问顺序伪影，不做行距/抬刀/避让的真轨迹规划。
+  摆位       冗余角 φ 固定（默认 0），不搜索刚度最优，仅用 placement 把点摆到砂带接触。
+  反解       Preston 单点线性反解压深/遍数，压深封顶在现实上限。
 """
 
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from ..config import BeltParams
-from ..types import ContactPoint, GrindStep, RemovalField, RobTarget
-from . import removal
-from .base import Solver
+from . import placement
+from . import removal as removal_mod
+from .base import TargetSolution, TargetSolver
+
+# 压入深度的现实上限（mm）。超过它砂带会堵死/工件烧伤，宁可加遍数也不加深压。
+_MAX_DEPTH_MM = 0.5
 
 
-def _normal_to_quat(normal: tuple[float, float, float], angle_deg: float) -> tuple[float, float, float, float]:
-    """让工具 Z 轴对准接触法向的反向，绕该轴附加 angle_deg 冗余转，返回四元数。
+def _order_path(points: list[tuple[float, float, float]]) -> list[int]:
+    """贪心最近邻把点串成一条路径，返回访问顺序（下标）。
 
-    baseline 只做「对准法向」这一最低要求；冗余角当前恒为 0。
-    真实姿态优化会在这里搜索 angle 以最大化刚度。
+    区域选点是无序的；按原序连成路径会有来回大跳，使驻留时间估计失真。从一个角点起、
+    每步走最近未访问点，得相邻间距大致均匀的路径。真轨迹规划（行距/抬刀/避让）以后再做。
     """
-    n = np.array(normal, dtype=float)
-    norm = np.linalg.norm(n)
-    z = n / norm if norm > 1e-9 else np.array([0.0, 0.0, 1.0])
-    z = -z  # 工具指向工件表面
-
-    # 任取与 z 正交的 x
-    ref = np.array([1.0, 0.0, 0.0]) if abs(z[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
-    x = ref - np.dot(ref, z) * z
-    x /= np.linalg.norm(x)
-    y = np.cross(z, x)
-
-    # 绕 z 转冗余角
-    a = math.radians(angle_deg)
-    x2 = math.cos(a) * x + math.sin(a) * y
-
-    R = np.column_stack([x2, np.cross(z, x2), z])
-    return _mat_to_quat(R)
+    n = len(points)
+    if n <= 2:
+        return list(range(n))
+    P = np.array(points, dtype=float)
+    start = int(np.argmin(P.sum(axis=1)))       # 一个角点作起点，稳定可复现
+    visited = [start]
+    seen = {start}
+    for _ in range(n - 1):
+        d = np.linalg.norm(P - P[visited[-1]], axis=1)
+        d[list(seen)] = np.inf
+        nxt = int(np.argmin(d))
+        visited.append(nxt)
+        seen.add(nxt)
+    return visited
 
 
-def _mat_to_quat(R: np.ndarray) -> tuple[float, float, float, float]:
-    tr = R[0, 0] + R[1, 1] + R[2, 2]
-    if tr > 0:
-        s = math.sqrt(tr + 1.0) * 2
-        w = 0.25 * s
-        x = (R[2, 1] - R[1, 2]) / s
-        y = (R[0, 2] - R[2, 0]) / s
-        z = (R[1, 0] - R[0, 1]) / s
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
-        w = (R[2, 1] - R[1, 2]) / s
-        x = 0.25 * s
-        y = (R[0, 1] + R[1, 0]) / s
-        z = (R[0, 2] + R[2, 0]) / s
-    elif R[1, 1] > R[2, 2]:
-        s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
-        w = (R[0, 2] - R[2, 0]) / s
-        x = (R[0, 1] + R[1, 0]) / s
-        y = 0.25 * s
-        z = (R[1, 2] + R[2, 1]) / s
-    else:
-        s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
-        w = (R[1, 0] - R[0, 1]) / s
-        x = (R[0, 2] + R[2, 0]) / s
-        y = (R[1, 2] + R[2, 1]) / s
-        z = 0.25 * s
-    return (float(w), float(x), float(y), float(z))
+def _pick_depth(belt: BeltParams) -> float:
+    """初始压深猜测（mm），按接触轮硬度粗调：硬轮压得浅。真优化应结合力学。"""
+    shore = belt.contact_wheel_hardness_shore
+    return 0.20 if shore < 65 else (0.15 if shore < 80 else 0.10)
 
 
-class BaselineSolver(Solver):
-    def contact_points(self, step: GrindStep, belt: BeltParams) -> list[ContactPoint]:
-        region = step.region or {}
+class BaselineTargetSolver(TargetSolver):
+    def solve(
+        self,
+        *,
+        points: list[tuple[float, float, float]],
+        normals: list[tuple[float, float, float]],
+        belt: BeltParams,
+        target_removal_mm: float,
+        feed_mm_s: float,
+        max_passes: int,
+        phi_deg: float,
+        warnings: list[str],
+    ) -> TargetSolution:
+        if belt.contact is None:
+            warnings.append(f"{belt.belt_id}: 无接触几何，无法摆位——先跑 calibrate。")
+            return TargetSolution()
+        if not points or not normals:
+            warnings.append("区域无点或点云无法向，无法摆位。")
+            return TargetSolution()
 
-        # 情况 A：区域直接给了点集
-        explicit = region.get("points")
-        if explicit:
-            pts = []
-            for i, p in enumerate(explicit):
-                pos = tuple(float(v) for v in p.get("pos", (0, 0, 0)))
-                normal = tuple(float(v) for v in p.get("normal", (0, 0, 1)))
-                pts.append(ContactPoint(index=i, pos=pos, normal=normal))
-            return pts
+        # 1) 排轨迹
+        order = _order_path(points)
+        pts = [points[i] for i in order]
+        nms = [normals[i] for i in order]
 
-        # 情况 B：给了包围盒 + 采样数，在一条直线上等距采样（占位）
-        bbox = region.get("bbox")
-        n = int(region.get("samples", 10))
-        if bbox:
-            p0 = np.array(bbox.get("min", (0, 0, 0)), dtype=float)
-            p1 = np.array(bbox.get("max", (100, 0, 0)), dtype=float)
-            pts = []
-            for i in range(n):
-                t = i / max(n - 1, 1)
-                pos = tuple(float(v) for v in (p0 + t * (p1 - p0)))
-                pts.append(ContactPoint(index=i, pos=pos, normal=(0.0, 0.0, 1.0)))
-            return pts
+        # 2) 名义压深下先摆位（段长与压深无关，压深只沿法向平移常量）
+        nominal = _pick_depth(belt)
+        targets = [
+            placement.place_point(np.array(q), np.array(m), belt, nominal, phi_deg, index=i)
+            for i, (q, m) in enumerate(zip(pts, nms))
+        ]
 
-        # 兜底：单点原点
-        return [ContactPoint(index=0, pos=(0.0, 0.0, 0.0), normal=(0.0, 0.0, 1.0))]
+        # 3) 用 robtarget 实际段长（wobj 系）反解——与正向 predict 同源，预测才精确对齐
+        seg = removal_mod._segment_lengths(targets)
+        seg_len = float(seg.mean()) if len(seg) else 5.0
+        seg_len = seg_len if seg_len > 1e-6 else 5.0
+        depth, passes = self._solve_process(
+            target_removal_mm, belt, feed_mm_s, seg_len, max_passes, warnings)
 
-    def optimize_posture(
-        self, points: list[ContactPoint], belt: BeltParams
-    ) -> tuple[list[RobTarget], float]:
-        targets: list[RobTarget] = []
-        for cp in points:
-            quat = _normal_to_quat(cp.normal, angle_deg=0.0)  # baseline 冗余角=0
-            targets.append(
-                RobTarget(
-                    index=cp.index,
-                    trans=cp.pos,
-                    rot=quat,
-                    redundancy_angle_deg=0.0,
-                    reachable=True,     # baseline 不做真实 IK 可达判定，仿真层复核
-                )
-            )
-        # baseline 不算刚度，姿态代价记 0（真算法在此返回 Σ 刚度倒数等）
-        return targets, 0.0
+        # 4) 正向预测（与反解同参数）
+        removal = removal_mod.predict_with(targets, belt, depth, passes, feed_mm_s)
+        return TargetSolution(targets=targets, contact_depth_mm=depth, passes=passes, removal=removal)
 
-    def predict_removal(
-        self, targets: list[RobTarget], step: GrindStep, belt: BeltParams
-    ) -> RemovalField:
-        return removal.predict(targets, step, belt)
+    def _solve_process(
+        self, target: float, belt: BeltParams, feed_mm_s: float, seg_len: float,
+        max_passes: int, warnings: list[str],
+    ) -> tuple[float, int]:
+        """Preston 反解：给定目标去除量，推荐 (压深, 遍数)。
+
+        先用硬度猜的名义压深算需要几遍（受 max_passes 限）；再在该遍数下回解精确压深并
+        夹在现实上限内。封顶后仍达不到就如实警告——绝不推荐 1mm+ 的荒谬压深去凑目标。
+        """
+        nominal = _pick_depth(belt)
+        passes = removal_mod.solve_passes_for_removal(target, nominal, feed_mm_s, seg_len, belt)
+        passes = max(1, min(passes, max_passes))
+        depth = removal_mod.solve_depth_for_removal(target, passes, feed_mm_s, seg_len, belt)
+        if depth > _MAX_DEPTH_MM:
+            depth = _MAX_DEPTH_MM
+            max_ach = removal_mod.removal_per_pass(depth, feed_mm_s, seg_len, belt) * passes
+            if max_ach < target * 0.95:
+                warnings.append(
+                    f"{belt.belt_id}: 目标去除 {target:.3f}mm 在现实参数内（压深≤{_MAX_DEPTH_MM}"
+                    f"mm、≤{max_passes}遍）达不到，最多约 {max_ach:.3f}mm——增加遍数或换粗带。")
+        return depth, passes

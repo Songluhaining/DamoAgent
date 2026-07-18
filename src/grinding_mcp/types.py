@@ -28,16 +28,25 @@ class GrindSpec:
 
 @dataclass
 class GrindStep:
-    """工作流中的一个子步骤（针对某条带、某区域的一遍打磨）。由智能体产出。"""
+    """一个打磨子任务（去哪磨=region + 用哪条带 + 磨掉多少=target_removal）。
+
+    这是**第一步任务编排**的产物：只定「去哪、磨什么」，不含打磨点。
+    contact_depth_mm / passes / targets_id 是**第二步细化**才填的输出（初始为空/0）。
+    分工：region/belt/target_removal 是离散决策（智能体产出）；压深/遍数/点是数值（求解器算）。
+    """
     step_id: str
     spec_id: str
     belt_id: str
     order: int
-    region: dict                     # 区域描述：曲面/包围盒/接触点引用
-    passes: int = 1
+    region: dict                     # 区域描述：法向筛选/包围盒/显式下标
+    workpiece_id: str = ""           # 关联的工件点云（第二步据此取点）
+    target_removal_mm: float = 0.0   # 分给这个子任务的目标去除量（第一步意图）
     feed_mm_s: float = 20.0
-    contact_depth_mm: float = 0.1    # 工件压入砂带深度（纯位置控制下这是去除量的主控量）
     dwell_s: float = 0.0
+    # --- 以下由第二步（细化）填 ---
+    contact_depth_mm: float = 0.0    # 反解出的压入深度（纯位置控制下是去除主控量）
+    passes: int = 0                  # 反解出的遍数
+    targets_id: str = ""             # 生成的 robtarget 集合 ID（回溯用）
 
 
 # --- 输入：工件表面 ------------------------------------------------------
